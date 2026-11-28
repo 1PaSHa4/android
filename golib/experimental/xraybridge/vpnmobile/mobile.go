@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"math"
 	"net/netip"
 	"strconv"
 	"sync"
@@ -27,6 +28,7 @@ var (
 	client *xraybridge.Client
 	stop chan struct{}
 	indexes = map[string]int{}
+	nextIndex int
 )
 
 type network struct {
@@ -43,22 +45,38 @@ func SetNetworks(raw string) error {
 	if err := json.Unmarshal([]byte(raw), &entries); err != nil { return errors.New("invalid network list") }
 	mu.Lock()
 	defer mu.Unlock()
-	list := make([]nics.Nic,0,len(entries))
+	// Validate the entire snapshot before touching any live handles.
 	seen := map[string]bool{}
-	for _, n := range entries {
+	handles := make([]uint64,len(entries))
+	for i,n := range entries {
 		h,err := strconv.ParseUint(n.Handle,10,64)
-		if err != nil || h == 0 || n.Name == "" || seen[n.Name] { return errors.New("invalid network handle or name") }
+		if err != nil || h == 0 || n.Name == "" || seen[n.Name] || math.IsNaN(n.Weight) || math.IsInf(n.Weight,0) {
+			return errors.New("invalid network snapshot")
+		}
 		seen[n.Name] = true
-		idx := indexes[n.Name]
-		if idx == 0 { idx = len(indexes)+1; indexes[n.Name]=idx }
-		nics.SetHandle(idx,h)
+		handles[i] = h
+	}
+	list := make([]nics.Nic,0,len(entries))
+	updated := make(map[string]int,len(entries))
+	for i,n := range entries {
+		// A newly connected network must not inherit the previous network's
+		// scheduler state or physical sockets, even if the UI name is the same.
+		key := n.Name + " [" + strconv.FormatUint(handles[i],10) + "]"
+		idx := indexes[key]
+		if idx == 0 { nextIndex++; idx = nextIndex }
+		updated[key]=idx
+		nics.SetHandle(idx,handles[i])
 		w := n.Weight
 		if w <= 0 { w = 1 }
-		nic := nics.Nic{Name:n.Name, Index:idx, Weight:w}
+		nic := nics.Nic{Name:key, Index:idx, Weight:w}
 		if n.V4 { nic.IP = net.IPv4zero }
 		if n.V6 { nic.IP6 = net.IPv6unspecified }
 		list = append(list,nic)
 	}
+	for key,idx := range indexes {
+		if _,ok := updated[key]; !ok { nics.DropHandle(idx) }
+	}
+	indexes = updated
 	sched.Update(list)
 	sched.CloseGone()
 	return nil
@@ -68,6 +86,15 @@ func SetNetworks(raw string) error {
 func ValidateProfile(link string) error {
 	_,err := profile.ParseRealityTCP(link)
 	return err
+}
+
+// ValidateEndpoint checks the actual core config, with no network I/O.
+func ValidateEndpoint(link string, endpointIP string) error {
+	p,err := profile.ParseRealityTCP(link)
+	if err != nil { return err }
+	ip,err := netip.ParseAddr(endpointIP)
+	if err != nil { return errors.New("VPN endpoint requires an IP") }
+	return xraybridge.ValidateConfig(link,netip.AddrPortFrom(ip.Unmap(),p.Port))
 }
 
 // Start takes ownership of a detached TUN descriptor on entry. The endpoint

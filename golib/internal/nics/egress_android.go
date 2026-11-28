@@ -30,11 +30,11 @@ const sendBuf = 4 << 20
 // the NDK form of Network#bindSocket). The app is excluded from its own VPN, so pinned sockets
 // go straight out of Wi-Fi or cellular.
 func ForceEgress(idx int, _ bool) func(network, address string, c syscall.RawConn) error {
-	h, ok := handle(idx)
-	if idx == 0 || !ok {
-		return nil
-	}
 	return func(network, _ string, c syscall.RawConn) error {
+		h, ok := handle(idx)
+		if idx == 0 || !ok || h == 0 {
+			return syscall.ENETDOWN // Never fall back to Android's default network.
+		}
 		var errno C.int
 		if err := c.Control(func(fd uintptr) {
 			errno = C.pin(C.uint64_t(h), C.int(fd))

@@ -103,6 +103,15 @@ type Client struct {
 	closed bool
 }
 
+// ValidateConfig verifies the minimal core configuration without starting Xray.
+func ValidateConfig(link string, endpoint netip.AddrPort) error {
+	p,err := profile.ParseRealityTCP(link)
+	if err != nil { return err }
+	_,err = buildCoreConfig(p,endpoint)
+	if err != nil { return errors.New("Xray configuration rejected") }
+	return nil
+}
+
 // Open starts the core with no listeners and a single encrypted outbound.
 // endpoint must come from a trusted bootstrap resolution.
 // Successful startup does not prove remote authentication or connectivity.
