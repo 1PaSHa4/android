@@ -1,5 +1,4 @@
-// Package vpnmobile is the experimental gomobile API. The regular app
-// does not call it yet; it must be built and linked before use.
+// Package vpnmobile is the gomobile API for the separate experimental VPN APK.
 package vpnmobile
 
 import (
@@ -46,10 +45,14 @@ type network struct {
 
 // SetNetworks accepts the original Android tracker format, without credentials.
 func SetNetworks(raw string) error {
-	var entries []network
-	if err := json.Unmarshal([]byte(raw), &entries); err != nil { return errors.New("invalid network list") }
 	mu.Lock()
 	defer mu.Unlock()
+	return setNetworksLocked(raw)
+}
+
+func setNetworksLocked(raw string) error {
+	var entries []network
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil { return errors.New("invalid network list") }
 	// Validate the entire snapshot before touching any live handles.
 	seen := map[string]bool{}
 	handles := make([]uint64,len(entries))
@@ -94,9 +97,8 @@ func SetAutoWeights(on bool) {
 	mu.Lock()
 	auto = on
 	sched.SetAuto(on)
-	raw := lastNetworks
+	if lastNetworks != "" { _ = setNetworksLocked(lastNetworks) }
 	mu.Unlock()
-	if raw != "" { _ = SetNetworks(raw) }
 }
 
 // ValidateProfile checks syntax only, without network I/O.
