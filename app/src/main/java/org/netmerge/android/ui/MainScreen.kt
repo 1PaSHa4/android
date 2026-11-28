@@ -39,6 +39,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.FilterChip
+import org.netmerge.android.BuildConfig
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -65,6 +68,11 @@ fun MainScreen(
     evenSplit: Boolean,
     onToggle: () -> Unit,
     onEvenSplit: (Boolean) -> Unit,
+    error: String? = null,
+    onOpenVpnSettings: (() -> Unit)? = null,
+    onOpenExclusions: (() -> Unit)? = null,
+    mode: Engine.Mode = Engine.Mode.MERGE_ONLY,
+    onMode: (Engine.Mode) -> Unit = {},
 ) {
     val p = LocalPalette.current
     Box(
@@ -80,7 +88,17 @@ fun MainScreen(
                 .padding(horizontal = 20.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Header(phase, stats.size)
+            Header(phase, stats.size, mode)
+            if (BuildConfig.EXPERIMENTAL_VPN) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = mode == Engine.Mode.MERGE_ONLY, onClick = { onMode(Engine.Mode.MERGE_ONLY) }, enabled = phase == Engine.Phase.OFF, label = { Text("Merge Only") })
+                    FilterChip(selected = mode == Engine.Mode.MERGE_VPN, onClick = { onMode(Engine.Mode.MERGE_VPN) }, enabled = phase == Engine.Phase.OFF, label = { Text("Merge + VPN") })
+                }
+                Text(if (mode == Engine.Mode.MERGE_ONLY) "Direct traffic · no remote VPN encryption" else "Experimental VPN · connection not independently verified", color = p.warn, fontSize = 12.sp)
+            }
+            if (error != null) Text(error, color = p.bad, fontSize = 14.sp)
+            if (onOpenVpnSettings != null) TextButton(onClick = onOpenVpnSettings) { Text("VPN profile") }
+            if (onOpenExclusions != null) TextButton(onClick = onOpenExclusions) { Text("App exclusions") }
             Spacer(Modifier.height(16.dp))
             PowerButton(phase, onToggle, size = 172.dp)
             Spacer(Modifier.height(16.dp))
@@ -120,11 +138,11 @@ fun MainScreen(
 }
 
 @Composable
-private fun Header(phase: Engine.Phase, networks: Int) {
+private fun Header(phase: Engine.Phase, networks: Int, mode: Engine.Mode) {
     val p = LocalPalette.current
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
-            "net-merge",
+            if (BuildConfig.EXPERIMENTAL_VPN) "net-merge VPN" else "net-merge",
             fontSize = 28.sp,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onBackground,
@@ -135,7 +153,7 @@ private fun Header(phase: Engine.Phase, networks: Int) {
             label = "status",
         ) { (ph, n) ->
             val (text, color) = when (ph) {
-                Engine.Phase.OFF -> "Off · tap to merge Wi-Fi and mobile data" to p.muted
+                Engine.Phase.OFF -> (if (BuildConfig.EXPERIMENTAL_VPN && mode == Engine.Mode.MERGE_VPN) "Off · configure VPN profile first" else "Off · tap to merge Wi-Fi and mobile data") to p.muted
                 Engine.Phase.STARTING -> "Connecting…" to p.warn
                 Engine.Phase.ON -> when (n) {
                     0 -> "Waiting for networks" to p.warn

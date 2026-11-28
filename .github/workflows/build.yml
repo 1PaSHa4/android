@@ -7,6 +7,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   engine-tests:
     runs-on: ubuntu-latest
@@ -21,6 +25,78 @@ jobs:
         run: |
           go vet ./...
           go test -race ./...
+
+  xray-experiment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: golib/experimental/xraybridge/go.mod
+          cache: false
+      - name: Resolve pinned Xray and run smoke tests
+        run: bash golib/experimental/xraybridge/check.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xray-dependencies
+          path: |
+            golib/experimental/xraybridge/go.mod
+            golib/experimental/xraybridge/go.sum
+
+  xray-android-aar:
+    needs: xray-experiment
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: golib/experimental/xraybridge/go.mod
+          cache: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Resolve Xray and build experimental arm64 library
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          bash golib/experimental/xraybridge/build-android.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: experimental-vpn-aar
+          path: golib/experimental/xraybridge/out/vpnmobile.aar
+          if-no-files-found: error
+
+  xray-android-apk:
+    needs: xray-android-aar
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: experimental-vpn-aar
+          path: app/libs
+      - name: Build isolated experimental APK
+        run: ./gradlew --no-daemon -PexperimentalVpn=true assembleDebug
+      - name: Verify native library and package
+        run: |
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          unzip -l "$apk" | grep 'lib/arm64-v8a/libgojni.so'
+          tool=$(find "$ANDROID_HOME/build-tools" -name aapt -type f | sort -V | tail -1)
+          "$tool" dump badging "$apk" | grep "package: name='org.netmerge.android.vpn.experimental'"
+          mkdir -p out
+          cp "$apk" out/net-merge-vpn-alpha-arm64.apk
+          sha256sum out/net-merge-vpn-alpha-arm64.apk > out/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: experimental-vpn-apk
+          path: out/*
+          if-no-files-found: error
 
   apk:
     runs-on: ubuntu-latest

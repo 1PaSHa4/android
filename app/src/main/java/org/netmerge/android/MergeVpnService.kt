@@ -15,6 +15,7 @@ import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.service.quicksettings.TileService
 import android.util.Log
+import java.util.concurrent.Executors
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -31,7 +32,7 @@ class MergeVpnService : VpnService() {
         private const val TAG = "NetMerge"
         private const val CHANNEL = "status"
         private const val NOTIF_ID = 1
-        private const val MTU = 9000
+        private val MTU = if (BuildConfig.EXPERIMENTAL_VPN) 1500 else 9000
 
         /** How long to wait for the first network before bringing the VPN up anyway. */
         private const val NETWORK_WAIT_MS = 3000L
@@ -50,12 +51,16 @@ class MergeVpnService : VpnService() {
     private var tun: ParcelFileDescriptor? = null
     private var tracker: NetworkTracker? = null
     private var ticks = 0
+    private val worker = Executors.newSingleThreadExecutor()
+    private var generation = 0
+    private var activeMode = Engine.Mode.MERGE_VPN
+    private var shuttingDown = false
     private val main = Handler(Looper.getMainLooper())
     private val refresh = object : Runnable {
         override fun run() {
-            Engine.sample()
+            runCatching { Engine.sample() }
             if (ticks++ % 2 == 0) updateNotification()
-            main.postDelayed(this, 1000)
+            if (!shuttingDown) main.postDelayed(this, 1000)
         }
     }
     private val establishAnyway = Runnable { establish() }
@@ -67,7 +72,7 @@ class MergeVpnService : VpnService() {
         }
         // ACTION_START, or the system starting us for always-on VPN (action android.net.VpnService).
         goForeground()
-        if (Engine.phase.value == Engine.Phase.OFF) begin()
+        if (Engine.phase.value == Engine.Phase.OFF && !shuttingDown) begin()
         return START_STICKY
     }
 
@@ -78,20 +83,29 @@ class MergeVpnService : VpnService() {
      * switching it on.
      */
     private fun begin() {
+        generation++
+        shuttingDown = false
+        Engine.setError(null)
         Engine.setPhase(Engine.Phase.STARTING)
         Engine.loadSettings(this)
+        activeMode = Engine.mode.value
         requestTileUpdate()
         val t = NetworkTracker(this) { nets -> main.post { onNetworks(nets) } }
         tracker = t
-        t.start()
+        try { t.start() } catch (_: Exception) {
+            Engine.setError("Could not track underlying networks")
+            shutdown()
+            return
+        }
         main.postDelayed(establishAnyway, NETWORK_WAIT_MS)
     }
 
     private fun establish() {
         main.removeCallbacks(establishAnyway)
-        if (Engine.phase.value != Engine.Phase.STARTING || tun != null) return
+        if (Engine.phase.value != Engine.Phase.STARTING || tun != null || shuttingDown) return
         val nets = tracker?.current().orEmpty()
 
+        val pfd = try {
         val builder = Builder()
             .setSession(getString(R.string.app_name))
             .setMtu(MTU)
@@ -107,87 +121,112 @@ class MergeVpnService : VpnService() {
                 ),
             )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
-        if (nets.isNotEmpty()) builder.setUnderlyingNetworks(nets.map { it.network }.toTypedArray())
+        if (nets.isNotEmpty() || BuildConfig.EXPERIMENTAL_VPN) builder.setUnderlyingNetworks(nets.map { it.network }.toTypedArray())
+        if (BuildConfig.EXPERIMENTAL_VPN) VpnAppExclusions.applyTo(this, builder)
         // IPv6: a ULA so apps still prefer IPv4 on dual-stack sites (see upstream tun.go).
-        runCatching {
+        if (BuildConfig.EXPERIMENTAL_VPN) {
             builder.addAddress("fd6e:6d65:7267::1", 64)
             builder.addRoute("::", 0)
             builder.addDnsServer("2606:4700:4700::1111")
-        }.onFailure { Log.w(TAG, "IPv6 not captured", it) }
-
-        val pfd = try {
-            builder.establish()
+        } else {
+            runCatching {
+                builder.addAddress("fd6e:6d65:7267::1", 64)
+                builder.addRoute("::", 0)
+                builder.addDnsServer("2606:4700:4700::1111")
+            }.onFailure { Log.w(TAG, "IPv6 not captured", it) }
+        }
+        builder.establish()
         } catch (e: Exception) {
-            Log.e(TAG, "establish failed", e)
+            Log.e(TAG, "establish failed")
             null
         }
         if (pfd == null) {
-            // Not prepared (permission revoked) or another VPN took over.
+            Engine.setError("Could not establish VPN interface")
             shutdown()
             return
         }
         tun = pfd
-        pushNetworks(nets)
-        try {
-            // The engine owns the descriptor from here and closes it in stop().
-            netmerge.Netmerge.start(pfd.detachFd().toLong(), MTU.toLong())
-        } catch (e: Exception) {
-            Log.e(TAG, "engine start failed", e)
-            shutdown()
-            return
+        val token = generation
+        val snapshot = networkJson(nets)
+        val mode = activeMode
+        worker.execute {
+            val started = runCatching {
+                NativeBackend.setNetworks(snapshot)
+                NativeBackend.start(this, pfd, MTU, mode)
+            }.isSuccess
+            main.post {
+                if (generation != token || shuttingDown) return@post
+                if (!started) {
+                    Engine.setError(if (mode == Engine.Mode.MERGE_VPN) "VPN start failed. Check the saved profile and endpoint IP." else "Merge engine start failed")
+                    shutdown()
+                    return@post
+                }
+                Engine.setPhase(Engine.Phase.ON)
+                main.post(refresh)
+                requestTileUpdate()
+            }
         }
-        Engine.setPhase(Engine.Phase.ON)
-        main.post(refresh)
-        requestTileUpdate()
     }
 
     private fun onNetworks(nets: List<NetworkTracker.Tracked>) {
-        when (Engine.phase.value) {
-            Engine.Phase.OFF -> return
-            Engine.Phase.STARTING -> {
-                pushNetworks(nets)
-                if (nets.isNotEmpty()) establish()
-            }
-            Engine.Phase.ON -> {
-                pushNetworks(nets)
-                updateNotification()
+        if (shuttingDown || Engine.phase.value == Engine.Phase.OFF) return
+        if (tun == null) {
+            if (nets.isNotEmpty()) establish()
+            return
+        }
+        val snapshot = networkJson(nets)
+        val token = generation
+        worker.execute {
+            if (runCatching { NativeBackend.setNetworks(snapshot) }.isFailure) {
+                runCatching { NativeBackend.setNetworks("[]") }
+                main.post {
+                    if (generation == token && !shuttingDown) {
+                        Engine.setError("Network update failed; VPN stopped")
+                        shutdown()
+                    }
+                }
             }
         }
+        val underlying = nets.map { it.network }.toTypedArray()
+        runCatching { setUnderlyingNetworks(if (nets.isEmpty() && !BuildConfig.EXPERIMENTAL_VPN) null else underlying) }
+        updateNotification()
     }
 
-    private fun pushNetworks(nets: List<NetworkTracker.Tracked>) {
+    private fun networkJson(nets: List<NetworkTracker.Tracked>): String {
         val arr = JSONArray()
         for (n in nets) {
-            arr.put(
-                JSONObject()
-                    .put("name", n.name)
-                    .put("handle", n.network.networkHandle.toString())
-                    .put("v4", n.v4)
-                    .put("v6", n.v6)
-                    .put("downKbps", n.downKbps),
-            )
+            arr.put(JSONObject()
+                .put("name", n.name)
+                .put("handle", n.network.networkHandle.toString())
+                .put("v4", n.v4)
+                .put("v6", n.v6)
+                .put("downKbps", n.downKbps))
         }
-        runCatching { netmerge.Netmerge.setNetworks(arr.toString()) }
-            .onFailure { Log.e(TAG, "setNetworks", it) }
-        // Tells the system which networks we really use (metering, status bar icons). An empty
-        // array would mean "no connectivity"; null means "follow the default network".
-        if (tun != null) {
-            setUnderlyingNetworks(if (nets.isEmpty()) null else nets.map { it.network }.toTypedArray())
-        }
+        return arr.toString()
     }
 
     private fun shutdown() {
+        if (shuttingDown) return
+        shuttingDown = true
+        generation++
         main.removeCallbacks(refresh)
         main.removeCallbacks(establishAnyway)
-        if (Engine.phase.value == Engine.Phase.ON) netmerge.Netmerge.stop()
-        Engine.setPhase(Engine.Phase.OFF)
         tracker?.stop()
         tracker = null
-        runCatching { tun?.close() }
+        val oldTun = tun
         tun = null
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
-        requestTileUpdate()
+        // Serialize stop after any queued start or network update.
+        worker.execute {
+            runCatching { NativeBackend.stop() }
+            runCatching { NativeBackend.setNetworks("[]") }
+            runCatching { oldTun?.close() }
+            main.post {
+                Engine.setPhase(Engine.Phase.OFF)
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                requestTileUpdate()
+            }
+        }
     }
 
     override fun onRevoke() {
@@ -197,6 +236,7 @@ class MergeVpnService : VpnService() {
 
     override fun onDestroy() {
         if (Engine.phase.value != Engine.Phase.OFF) shutdown()
+        worker.shutdown()
         super.onDestroy()
     }
 
@@ -233,7 +273,7 @@ class MergeVpnService : VpnService() {
         )
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_merge)
-            .setContentTitle(getString(R.string.notif_title))
+            .setContentTitle(if (BuildConfig.EXPERIMENTAL_VPN) (if (activeMode == Engine.Mode.MERGE_ONLY) "Merge Only · no VPN encryption" else "Merge + VPN") else getString(R.string.notif_title))
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setOngoing(true)

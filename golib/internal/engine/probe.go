@@ -2,6 +2,7 @@ package engine
 
 import (
 	"net"
+	"net/netip"
 	"time"
 
 	"netmerge-android/internal/nics"
@@ -19,7 +20,9 @@ const (
 	probeEveryDown = 4 * time.Second
 )
 
-func probe(sl *Slot, f Family) bool {
+func probe(sl *Slot, f Family) bool { return probeWithTargets(sl, f, probeTargets) }
+
+func probeWithTargets(sl *Slot, f Family, targets [2][]string) bool {
 	ip := sl.ip(f)
 	if ip == nil {
 		return false
@@ -28,7 +31,7 @@ func probe(sl *Slot, f Family) bool {
 	if f == Fam6 {
 		network = "tcp6"
 	}
-	for _, t := range probeTargets[f] {
+	for _, t := range targets[f] {
 		d := net.Dialer{LocalAddr: &net.TCPAddr{IP: ip}, Control: nics.ForceEgress(sl.Index, f == Fam6), Timeout: probeTimeout}
 		if c, err := d.Dial(network, t); err == nil {
 			c.Close()
@@ -48,6 +51,21 @@ type probeJob struct {
 // or a captive-portal Wi-Fi therefore never receives flows, and a recovered link is used again
 // within seconds. Runs until stop is closed (nil = forever).
 func (s *Scheduler) RunProbes(stop <-chan struct{}) {
+	s.runProbes(stop, probeTargets)
+}
+
+// RunEndpointProbes checks only the selected VPN endpoint. This measures TCP
+// reachability, not successful authentication or encrypted traffic.
+func (s *Scheduler) RunEndpointProbes(stop <-chan struct{}, endpoint netip.AddrPort) {
+	if !endpoint.IsValid() || endpoint.Port() == 0 { return }
+	var targets [2][]string
+	f := Fam4
+	if endpoint.Addr().Unmap().Is6() { f = Fam6 }
+	targets[f] = []string{netip.AddrPortFrom(endpoint.Addr().Unmap(), endpoint.Port()).String()}
+	s.runProbes(stop, targets)
+}
+
+func (s *Scheduler) runProbes(stop <-chan struct{}, targets [2][]string) {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
 	for {
@@ -59,7 +77,10 @@ func (s *Scheduler) RunProbes(stop <-chan struct{}) {
 		for _, j := range s.probeDue() {
 			go func() {
 				defer j.sl.probing[j.f].Store(false)
-				s.SetState(j.sl, j.f, probe(j.sl, j.f))
+				if len(targets[j.f]) == 0 { return }
+				up := probeWithTargets(j.sl, j.f, targets)
+				select { case <-stop: return; default: }
+				s.SetState(j.sl, j.f, up)
 			}()
 		}
 	}

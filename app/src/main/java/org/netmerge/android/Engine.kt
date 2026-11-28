@@ -11,6 +11,17 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 object Engine {
     enum class Phase { OFF, STARTING, ON }
+    enum class Mode { MERGE_VPN, MERGE_ONLY }
+    private val _mode = MutableStateFlow(if (BuildConfig.EXPERIMENTAL_VPN) Mode.MERGE_VPN else Mode.MERGE_ONLY)
+    val mode: StateFlow<Mode> = _mode.asStateFlow()
+
+    fun setMode(ctx: Context, mode: Mode) {
+        if (!BuildConfig.EXPERIMENTAL_VPN || _phase.value != Phase.OFF) return
+        if (prefs(ctx).edit().putString("mode", mode.name).commit()) {
+            _mode.value = mode
+            setError(null)
+        }
+    }
 
     /** Seconds of throughput history kept for the live chart. */
     const val HISTORY = 60
@@ -28,6 +39,10 @@ object Engine {
     private val _evenSplit = MutableStateFlow(false)
     val evenSplit: StateFlow<Boolean> = _evenSplit.asStateFlow()
 
+    private val _error = MutableStateFlow<String?>(null)
+    val error: StateFlow<String?> = _error.asStateFlow()
+    internal fun setError(message: String?) { _error.value = message }
+
     val running: Boolean get() = _phase.value == Phase.ON
 
     internal fun setPhase(p: Phase) {
@@ -40,7 +55,7 @@ object Engine {
 
     /** Reads the engine's counters. Called by the service every second while it runs. */
     internal fun sample() {
-        val now = Stats.parse(netmerge.Netmerge.stats()).filter { it.present }
+        val now = Stats.parse(NativeBackend.stats()).filter { it.present }
         _stats.value = now
         val old = _history.value
         _history.value = now.associate { s ->
@@ -54,6 +69,8 @@ object Engine {
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
     fun loadSettings(ctx: Context) {
+        _mode.value = if (!BuildConfig.EXPERIMENTAL_VPN) Mode.MERGE_ONLY else
+            if (prefs(ctx).getString("mode", null) == Mode.MERGE_ONLY.name) Mode.MERGE_ONLY else Mode.MERGE_VPN
         _evenSplit.value = prefs(ctx).getBoolean("even_split", false)
         applySettings()
     }
@@ -65,6 +82,6 @@ object Engine {
     }
 
     private fun applySettings() {
-        runCatching { netmerge.Netmerge.setAutoWeights(!_evenSplit.value) }
+        runCatching { NativeBackend.setAutoWeights(!_evenSplit.value) }
     }
 }
