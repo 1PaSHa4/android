@@ -40,6 +40,29 @@ jobs:
             golib/experimental/xraybridge/go.mod
             golib/experimental/xraybridge/go.sum
 
+  xray-android-aar:
+    needs: xray-experiment
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: golib/experimental/xraybridge/go.mod
+          cache: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Resolve Xray and build experimental arm64 library
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          bash golib/experimental/xraybridge/build-android.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: experimental-vpn-aar
+          path: golib/experimental/xraybridge/out/vpnmobile.aar
+          if-no-files-found: error
+
   apk:
     runs-on: ubuntu-latest
     steps:

@@ -34,7 +34,7 @@ func (c *Client) DialUDP(m *M.Metadata) (net.PacketConn, error) {
 	lifecycle.Lock()
 	defer lifecycle.Unlock()
 	if c == nil || c.closed || active != c { return nil, errors.New("VPN core stopped") }
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(),sessionKey{},c.endpoint))
 	pc, err := core.DialUDP(ctx, c.instance)
 	if err != nil { cancel(); return nil, errors.New("VPN UDP setup failed") }
 	return &packetFlow{PacketConn: pc, target: netip.AddrPortFrom(m.DstIP.Unmap(), m.DstPort), cancel: cancel}, nil

@@ -26,7 +26,28 @@ import (
 type systemGate struct {
 	mu sync.RWMutex
 	endpoint *vpntransport.EndpointDialer
+	ctx context.Context
+	cancel context.CancelFunc
+	conns map[*physicalConn]struct{}
 }
+
+type physicalConn struct {
+	net.Conn
+	g *systemGate
+	once sync.Once
+}
+func (c *physicalConn) Close() error {
+	var err error
+	c.once.Do(func(){
+		err = c.Conn.Close()
+		c.g.mu.Lock()
+		delete(c.g.conns,c)
+		c.g.mu.Unlock()
+	})
+	return err
+}
+
+type sessionKey struct{}
 var gate systemGate
 var lifecycle sync.Mutex
 var active *Client
@@ -37,26 +58,51 @@ var _ internet.SystemDialer = (*systemGate)(nil)
 
 func (g *systemGate) Dial(ctx context.Context, _ xnet.Address, dest xnet.Destination, _ *internet.SocketConfig) (net.Conn, error) {
 	g.mu.RLock()
-	d := g.endpoint
+	d, lifetime := g.endpoint, g.ctx
 	g.mu.RUnlock()
-	if d == nil || dest.Network != xnet.Network_TCP {
+	if d == nil || ctx.Value(sessionKey{}) != d || dest.Network != xnet.Network_TCP {
 		return nil, errors.New("VPN system dial rejected")
 	}
 	if dest.Address == nil || !dest.Address.Family().IsIP() {
 		return nil, errors.New("VPN physical destination must be an IP")
 	}
-	return d.DialContext(ctx, "tcp", net.JoinHostPort(dest.Address.IP().String(), strconv.Itoa(int(dest.Port))))
+	dialCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stop := context.AfterFunc(lifetime,cancel)
+	defer stop()
+	raw, err := d.DialContext(dialCtx, "tcp", net.JoinHostPort(dest.Address.IP().String(), strconv.Itoa(int(dest.Port))))
+	if err != nil { return nil, err }
+	g.mu.Lock()
+	if g.endpoint != d || lifetime.Err() != nil || ctx.Err() != nil {
+		g.mu.Unlock()
+		_ = raw.Close()
+		return nil, errors.New("VPN session ended")
+	}
+	c := &physicalConn{Conn:raw,g:g}
+	g.conns[c] = struct{}{}
+	g.mu.Unlock()
+	return c,nil
 }
 func (g *systemGate) DestIpAddress() xnet.IP { return nil }
 
 func (g *systemGate) set(d *vpntransport.EndpointDialer) {
 	g.mu.Lock()
+	if g.cancel != nil { g.cancel() }
+	old := g.conns
+	g.conns = make(map[*physicalConn]struct{})
 	g.endpoint = d
+	if d != nil {
+		g.ctx,g.cancel = context.WithCancel(context.Background())
+	} else {
+		g.ctx,g.cancel = nil,nil
+	}
 	g.mu.Unlock()
+	for c := range old { _ = c.Close() }
 }
 
 type Client struct {
 	instance *core.Instance
+	endpoint *vpntransport.EndpointDialer
 	closed bool
 }
 
@@ -89,7 +135,7 @@ func Open(link string, endpoint netip.AddrPort, pinned vpntransport.PinnedTCP) (
 		_ = instance.Close()
 		return nil, errors.New("Xray startup failed")
 	}
-	c := &Client{instance: instance}
+	c := &Client{instance: instance, endpoint:d}
 	active = c
 	return c, nil
 }
@@ -105,7 +151,7 @@ func (c *Client) DialTCP(ctx context.Context, target netip.AddrPort) (net.Conn, 
 	if !target.IsValid() || target.Port() == 0 || target.Addr().Zone() != "" {
 		return nil, errors.New("invalid application destination")
 	}
-	return core.Dial(ctx, c.instance, xnet.TCPDestination(xnet.ParseAddress(target.Addr().Unmap().String()), xnet.Port(target.Port())))
+	return core.Dial(context.WithValue(ctx,sessionKey{},c.endpoint), c.instance, xnet.TCPDestination(xnet.ParseAddress(target.Addr().Unmap().String()), xnet.Port(target.Port())))
 }
 
 // Close disables new flows and shuts down the core.
