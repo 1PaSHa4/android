@@ -22,6 +22,24 @@ jobs:
           go vet ./...
           go test -race ./...
 
+  xray-experiment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: golib/experimental/xraybridge/go.mod
+          cache: false
+      - name: Resolve pinned Xray and run smoke tests
+        run: bash golib/experimental/xraybridge/check.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xray-dependencies
+          path: |
+            golib/experimental/xraybridge/go.mod
+            golib/experimental/xraybridge/go.sum
+
   apk:
     runs-on: ubuntu-latest
     steps:
