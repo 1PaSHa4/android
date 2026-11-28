@@ -2,7 +2,6 @@
 package xraybridge
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"net"
@@ -12,9 +11,7 @@ import (
 
 	xnet "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/core"
-	"github.com/xtls/xray-core/infra/conf/serial"
 	"github.com/xtls/xray-core/transport/internet"
-	_ "github.com/xtls/xray-core/main/distro/all"
 
 	"netmerge-android/internal/vpntransport"
 	"netmerge-android/internal/profile"
@@ -120,9 +117,7 @@ func Open(link string, endpoint netip.AddrPort, pinned vpntransport.PinnedTCP) (
 	if endpoint.Port() != p.Port { return nil, errors.New("VPN endpoint port differs from profile") }
 	d, err := vpntransport.NewEndpointDialer(pinned, endpoint)
 	if err != nil { return nil, err }
-	raw, err := vpntransport.BuildXrayConfig(link, endpoint.Addr())
-	if err != nil { return nil, err }
-	cfg, err := serial.LoadJSONConfig(bytes.NewReader(raw))
+	cfg, err := buildCoreConfig(p, endpoint)
 	if err != nil { return nil, errors.New("Xray configuration rejected") }
 	gate.set(d)
 	instance, err := core.New(cfg)
