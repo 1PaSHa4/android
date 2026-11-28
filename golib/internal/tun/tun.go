@@ -108,7 +108,8 @@ func (t *Tun) teardown() {
 	}
 	if t.stk != nil {
 		done := make(chan struct{})
-		go func() { t.stk.Close(); t.stk.Wait(); close(done) }()
+		stk := t.stk
+		go func() { stk.Close(); stk.Wait(); close(done) }()
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):

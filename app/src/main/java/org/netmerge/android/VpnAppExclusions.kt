@@ -27,11 +27,14 @@ internal object VpnAppExclusions {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getStringSet(KEY, emptySet()).orEmpty().toSet() - context.packageName
 
-    fun save(context: Context, packages: Set<String>) {
-        val visible = visibleApps(context).map { it.packageName }.toSet()
-        val safe = packages.intersect(visible) - context.packageName
+    @Synchronized
+    fun setExcluded(context: Context, name: String, excluded: Boolean): Set<String> {
+        require(name.isNotBlank() && name != context.packageName)
+        val previous = load(context)
+        val updated = if (excluded) previous + name else previous - name
         check(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().putStringSet(KEY, safe).commit())
+            .edit().putStringSet(KEY, updated.toSet()).commit())
+        return load(context)
     }
 
     /** Apply only while constructing a new experimental TUN, before establish(). */

@@ -7,7 +7,11 @@ import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import android.view.WindowManager
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.graphics.Brush
+import org.netmerge.android.ui.LocalPalette
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -43,7 +47,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        if (BuildConfig.EXPERIMENTAL_VPN) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         Engine.loadSettings(this)
         setContent {
             NetMergeTheme {
@@ -52,12 +55,20 @@ class MainActivity : ComponentActivity() {
                 val history by Engine.history.collectAsState()
                 val even by Engine.evenSplit.collectAsState()
                 val error by Engine.error.collectAsState()
-                var settings by remember { mutableStateOf(false) }
-                if (BuildConfig.EXPERIMENTAL_VPN && settings) {
-                    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(20.dp)) {
-                        TextButton(onClick = { settings = false }) { Text("Back") }
+                val mode by Engine.mode.collectAsState()
+                var settings by remember { mutableStateOf(0) } // 0 home, 1 profile, 2 exclusions
+                DisposableEffect(settings) {
+                    if (BuildConfig.EXPERIMENTAL_VPN && settings == 1) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                    else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                    onDispose { window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
+                }
+                if (BuildConfig.EXPERIMENTAL_VPN && settings != 0) {
+                    val palette = LocalPalette.current
+                    Column(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(palette.backgroundTop,palette.backgroundBottom))).safeDrawingPadding().padding(20.dp)) {
+                        TextButton(onClick = { settings = 0 }) { Text("Back") }
                         ExperimentalVpnSettings(
                             running = phase != Engine.Phase.OFF,
+                            profilePage = settings == 1,
                             validate = { link, ip -> NativeBackend.validate(link, ip) },
                             modifier = Modifier.weight(1f),
                         )
@@ -70,7 +81,10 @@ class MainActivity : ComponentActivity() {
                     onToggle = ::toggle,
                     onEvenSplit = { Engine.setEvenSplit(this, it) },
                     error = error,
-                    onOpenVpnSettings = if (BuildConfig.EXPERIMENTAL_VPN) ({ settings = true }) else null,
+                    onOpenVpnSettings = if (BuildConfig.EXPERIMENTAL_VPN) ({ settings = 1 }) else null,
+                    onOpenExclusions = if (BuildConfig.EXPERIMENTAL_VPN) ({ settings = 2 }) else null,
+                    mode = mode,
+                    onMode = { Engine.setMode(this,it) },
                 )
             }
         }

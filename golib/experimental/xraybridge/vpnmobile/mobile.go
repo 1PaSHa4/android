@@ -123,7 +123,7 @@ func Start(fd int, mtu int, link string, endpointIP string) error {
 	mu.Lock()
 	defer mu.Unlock()
 	if fd < 0 { return errors.New("invalid TUN descriptor") }
-	if client != nil || mtu < 1280 || mtu > 9000 {
+	if stop != nil || mtu < 1280 || mtu > 9000 {
 		_ = syscall.Close(fd)
 		return errors.New("VPN already running or invalid MTU")
 	}
@@ -147,6 +147,23 @@ func Start(fd int, mtu int, link string, endpointIP string) error {
 	return nil
 }
 
+// StartMergeOnly is a separate, explicitly selected unencrypted mode.
+// It must never be called as a fallback from Start.
+func StartMergeOnly(fd int, mtu int) error {
+	mu.Lock()
+	defer mu.Unlock()
+	if fd < 0 { return errors.New("invalid TUN descriptor") }
+	if stop != nil || mtu < 1280 || mtu > 9000 {
+		_ = syscall.Close(fd)
+		return errors.New("engine already running or invalid MTU")
+	}
+	if err := dev.Start(bal,fd,mtu); err != nil { return errors.New("merge TUN initialization failed") }
+	stop = make(chan struct{})
+	go sched.RunProbes(stop)
+	go sample(stop)
+	return nil
+}
+
 func sample(done <-chan struct{}) {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
@@ -164,9 +181,9 @@ func sample(done <-chan struct{}) {
 func Stop() {
 	mu.Lock()
 	defer mu.Unlock()
-	if client == nil { return }
+	if stop == nil { return }
 	close(stop)
-	_ = client.Close()
+	if client != nil { _ = client.Close() }
 	dev.Stop()
 	client = nil
 	stop = nil
@@ -175,7 +192,7 @@ func Stop() {
 func IsRunning() bool {
 	mu.Lock()
 	defer mu.Unlock()
-	return client != nil
+	return stop != nil
 }
 
 func Stats() string {

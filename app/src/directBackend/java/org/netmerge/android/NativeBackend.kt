@@ -4,7 +4,8 @@ import android.content.Context
 import android.os.ParcelFileDescriptor
 
 internal object NativeBackend {
-    fun start(context: Context, pfd: ParcelFileDescriptor, mtu: Int) {
+    fun start(context: Context, pfd: ParcelFileDescriptor, mtu: Int, mode: Engine.Mode) {
+        check(mode == Engine.Mode.MERGE_ONLY)
         netmerge.Netmerge.start(pfd.detachFd().toLong(), mtu.toLong())
     }
     fun stop() = netmerge.Netmerge.stop()

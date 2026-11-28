@@ -53,6 +53,7 @@ class MergeVpnService : VpnService() {
     private var ticks = 0
     private val worker = Executors.newSingleThreadExecutor()
     private var generation = 0
+    private var activeMode = Engine.Mode.MERGE_VPN
     private var shuttingDown = false
     private val main = Handler(Looper.getMainLooper())
     private val refresh = object : Runnable {
@@ -87,6 +88,7 @@ class MergeVpnService : VpnService() {
         Engine.setError(null)
         Engine.setPhase(Engine.Phase.STARTING)
         Engine.loadSettings(this)
+        activeMode = Engine.mode.value
         requestTileUpdate()
         val t = NetworkTracker(this) { nets -> main.post { onNetworks(nets) } }
         tracker = t
@@ -146,15 +148,16 @@ class MergeVpnService : VpnService() {
         tun = pfd
         val token = generation
         val snapshot = networkJson(nets)
+        val mode = activeMode
         worker.execute {
             val started = runCatching {
                 NativeBackend.setNetworks(snapshot)
-                NativeBackend.start(this, pfd, MTU)
+                NativeBackend.start(this, pfd, MTU, mode)
             }.isSuccess
             main.post {
                 if (generation != token || shuttingDown) return@post
                 if (!started) {
-                    Engine.setError(if (BuildConfig.EXPERIMENTAL_VPN) "VPN start failed. Check the saved profile and endpoint IP." else "Engine start failed")
+                    Engine.setError(if (mode == Engine.Mode.MERGE_VPN) "VPN start failed. Check the saved profile and endpoint IP." else "Merge engine start failed")
                     shutdown()
                     return@post
                 }
@@ -270,7 +273,7 @@ class MergeVpnService : VpnService() {
         )
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_merge)
-            .setContentTitle(getString(R.string.notif_title))
+            .setContentTitle(if (BuildConfig.EXPERIMENTAL_VPN) (if (activeMode == Engine.Mode.MERGE_ONLY) "Merge Only · no VPN encryption" else "Merge + VPN") else getString(R.string.notif_title))
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setOngoing(true)

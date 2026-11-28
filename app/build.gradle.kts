@@ -16,8 +16,8 @@ android {
         applicationId = "org.netmerge.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = if (experimentalVpn) "0.1.0-vpn-alpha" else "0.1.0"
+        versionCode = if (experimentalVpn) 2 else 1
+        versionName = if (experimentalVpn) "0.1.1-vpn-alpha" else "0.1.0"
         buildConfigField("boolean", "EXPERIMENTAL_VPN", experimentalVpn.toString())
         manifestPlaceholders["appLabel"] = if (experimentalVpn) "net-merge VPN (alpha)" else "@string/app_name"
         if (experimentalVpn) {

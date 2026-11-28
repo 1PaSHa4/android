@@ -11,6 +11,17 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 object Engine {
     enum class Phase { OFF, STARTING, ON }
+    enum class Mode { MERGE_VPN, MERGE_ONLY }
+    private val _mode = MutableStateFlow(if (BuildConfig.EXPERIMENTAL_VPN) Mode.MERGE_VPN else Mode.MERGE_ONLY)
+    val mode: StateFlow<Mode> = _mode.asStateFlow()
+
+    fun setMode(ctx: Context, mode: Mode) {
+        if (!BuildConfig.EXPERIMENTAL_VPN || _phase.value != Phase.OFF) return
+        if (prefs(ctx).edit().putString("mode", mode.name).commit()) {
+            _mode.value = mode
+            setError(null)
+        }
+    }
 
     /** Seconds of throughput history kept for the live chart. */
     const val HISTORY = 60
@@ -58,6 +69,8 @@ object Engine {
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
     fun loadSettings(ctx: Context) {
+        _mode.value = if (!BuildConfig.EXPERIMENTAL_VPN) Mode.MERGE_ONLY else
+            if (prefs(ctx).getString("mode", null) == Mode.MERGE_ONLY.name) Mode.MERGE_ONLY else Mode.MERGE_VPN
         _evenSplit.value = prefs(ctx).getBoolean("even_split", false)
         applySettings()
     }
