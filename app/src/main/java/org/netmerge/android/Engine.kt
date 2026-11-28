@@ -28,6 +28,10 @@ object Engine {
     private val _evenSplit = MutableStateFlow(false)
     val evenSplit: StateFlow<Boolean> = _evenSplit.asStateFlow()
 
+    private val _error = MutableStateFlow<String?>(null)
+    val error: StateFlow<String?> = _error.asStateFlow()
+    internal fun setError(message: String?) { _error.value = message }
+
     val running: Boolean get() = _phase.value == Phase.ON
 
     internal fun setPhase(p: Phase) {
@@ -40,7 +44,7 @@ object Engine {
 
     /** Reads the engine's counters. Called by the service every second while it runs. */
     internal fun sample() {
-        val now = Stats.parse(netmerge.Netmerge.stats()).filter { it.present }
+        val now = Stats.parse(NativeBackend.stats()).filter { it.present }
         _stats.value = now
         val old = _history.value
         _history.value = now.associate { s ->
@@ -65,6 +69,6 @@ object Engine {
     }
 
     private fun applySettings() {
-        runCatching { netmerge.Netmerge.setAutoWeights(!_evenSplit.value) }
+        runCatching { NativeBackend.setAutoWeights(!_evenSplit.value) }
     }
 }

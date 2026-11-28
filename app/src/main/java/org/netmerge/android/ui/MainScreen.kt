@@ -39,6 +39,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import org.netmerge.android.BuildConfig
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -65,6 +67,8 @@ fun MainScreen(
     evenSplit: Boolean,
     onToggle: () -> Unit,
     onEvenSplit: (Boolean) -> Unit,
+    error: String? = null,
+    onOpenVpnSettings: (() -> Unit)? = null,
 ) {
     val p = LocalPalette.current
     Box(
@@ -81,6 +85,11 @@ fun MainScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Header(phase, stats.size)
+            if (BuildConfig.EXPERIMENTAL_VPN) {
+                Text("Experimental build · connection not independently verified", color = p.warn, fontSize = 12.sp)
+            }
+            if (error != null) Text(error, color = p.bad, fontSize = 14.sp)
+            if (onOpenVpnSettings != null) TextButton(onClick = onOpenVpnSettings) { Text("VPN profile and app exclusions") }
             Spacer(Modifier.height(16.dp))
             PowerButton(phase, onToggle, size = 172.dp)
             Spacer(Modifier.height(16.dp))
@@ -124,7 +133,7 @@ private fun Header(phase: Engine.Phase, networks: Int) {
     val p = LocalPalette.current
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
-            "net-merge",
+            if (BuildConfig.EXPERIMENTAL_VPN) "net-merge VPN" else "net-merge",
             fontSize = 28.sp,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onBackground,
@@ -135,7 +144,7 @@ private fun Header(phase: Engine.Phase, networks: Int) {
             label = "status",
         ) { (ph, n) ->
             val (text, color) = when (ph) {
-                Engine.Phase.OFF -> "Off · tap to merge Wi-Fi and mobile data" to p.muted
+                Engine.Phase.OFF -> (if (BuildConfig.EXPERIMENTAL_VPN) "Off · configure VPN profile first" else "Off · tap to merge Wi-Fi and mobile data") to p.muted
                 Engine.Phase.STARTING -> "Connecting…" to p.warn
                 Engine.Phase.ON -> when (n) {
                     0 -> "Waiting for networks" to p.warn

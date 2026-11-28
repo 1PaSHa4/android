@@ -6,6 +6,8 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val experimentalVpn = providers.gradleProperty("experimentalVpn").orNull == "true"
+
 android {
     namespace = "org.netmerge.android"
     compileSdk = 36
@@ -15,7 +17,13 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "0.1.0"
+        versionName = if (experimentalVpn) "0.1.0-vpn-alpha" else "0.1.0"
+        buildConfigField("boolean", "EXPERIMENTAL_VPN", experimentalVpn.toString())
+        manifestPlaceholders["appLabel"] = if (experimentalVpn) "net-merge VPN (alpha)" else "@string/app_name"
+        if (experimentalVpn) {
+            applicationIdSuffix = ".vpn.experimental"
+            ndk { abiFilters += "arm64-v8a" }
+        }
     }
 
     // Releases are signed with the net-merge key when CI has it (ANDROID_KEYSTORE, from the repo's
@@ -37,11 +45,13 @@ android {
             isMinifyEnabled = false
             // Phones only (no emulator x86 code), which keeps the download about a third smaller.
             ndk {
-                abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+                if (!experimentalVpn) abiFilters += listOf("arm64-v8a", "armeabi-v7a")
             }
             signingConfig = signingConfigs.getByName(if (releaseKey != null) "release" else "debug")
         }
     }
+
+    sourceSets.getByName("main").java.srcDir(if (experimentalVpn) "src/vpnBackend/java" else "src/directBackend/java")
 
     buildFeatures {
         compose = true
@@ -62,7 +72,7 @@ kotlin {
 
 dependencies {
     // Built by scripts/build-go.sh (gomobile bind of golib/netmerge).
-    implementation(files("libs/netmerge.aar"))
+    implementation(files(if (experimentalVpn) "libs/vpnmobile.aar" else "libs/netmerge.aar"))
 
     implementation(platform("androidx.compose:compose-bom:2025.06.00"))
     implementation("androidx.compose.ui:ui")

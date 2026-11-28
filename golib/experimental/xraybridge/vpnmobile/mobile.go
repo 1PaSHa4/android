@@ -29,7 +29,11 @@ var (
 	stop chan struct{}
 	indexes = map[string]int{}
 	nextIndex int
+	auto = true
+	lastNetworks string
 )
+
+func init() { sched.SetAuto(true) }
 
 type network struct {
 	Name string `json:"name"`
@@ -37,6 +41,7 @@ type network struct {
 	V4 bool `json:"v4"`
 	V6 bool `json:"v6"`
 	Weight float64 `json:"weight"`
+	DownKbps float64 `json:"downKbps"`
 }
 
 // SetNetworks accepts the original Android tracker format, without credentials.
@@ -50,12 +55,14 @@ func SetNetworks(raw string) error {
 	handles := make([]uint64,len(entries))
 	for i,n := range entries {
 		h,err := strconv.ParseUint(n.Handle,10,64)
-		if err != nil || h == 0 || n.Name == "" || seen[n.Name] || math.IsNaN(n.Weight) || math.IsInf(n.Weight,0) {
+		if err != nil || h == 0 || n.Name == "" || seen[n.Name] || math.IsNaN(n.Weight) || math.IsInf(n.Weight,0) || math.IsNaN(n.DownKbps) || math.IsInf(n.DownKbps,0) {
 			return errors.New("invalid network snapshot")
 		}
 		seen[n.Name] = true
 		handles[i] = h
 	}
+	var maxDown float64
+	for _,n := range entries { maxDown = max(maxDown,n.DownKbps) }
 	list := make([]nics.Nic,0,len(entries))
 	updated := make(map[string]int,len(entries))
 	for i,n := range entries {
@@ -67,7 +74,7 @@ func SetNetworks(raw string) error {
 		updated[key]=idx
 		nics.SetHandle(idx,handles[i])
 		w := n.Weight
-		if w <= 0 { w = 1 }
+		if w <= 0 { w = 1; if auto && maxDown > 0 && n.DownKbps > 0 { w = max(0.1,n.DownKbps/maxDown) } }
 		nic := nics.Nic{Name:key, Index:idx, Weight:w}
 		if n.V4 { nic.IP = net.IPv4zero }
 		if n.V6 { nic.IP6 = net.IPv6unspecified }
@@ -77,9 +84,19 @@ func SetNetworks(raw string) error {
 		if _,ok := updated[key]; !ok { nics.DropHandle(idx) }
 	}
 	indexes = updated
+	lastNetworks = raw
 	sched.Update(list)
 	sched.CloseGone()
 	return nil
+}
+
+func SetAutoWeights(on bool) {
+	mu.Lock()
+	auto = on
+	sched.SetAuto(on)
+	raw := lastNetworks
+	mu.Unlock()
+	if raw != "" { _ = SetNetworks(raw) }
 }
 
 // ValidateProfile checks syntax only, without network I/O.
@@ -160,6 +177,15 @@ func IsRunning() bool {
 }
 
 func Stats() string {
-	b,_ := json.Marshal(sched.Snapshot())
+	snap := sched.Snapshot()
+	out := make([]map[string]any,0,len(snap))
+	for _,s := range snap {
+		out = append(out,map[string]any{
+			"name":s.Name,"state":s.State,"state6":s.State6,"active":s.Active,
+			"total":s.Total,"failed":s.Failed,"bytesIn":s.BytesIn,"bytesOut":s.BytesOut,
+			"rateIn":s.RateIn,"rateOut":s.RateOut,"weight":s.Weight,"present":s.Present,
+		})
+	}
+	b,_ := json.Marshal(out)
 	return string(b)
 }
