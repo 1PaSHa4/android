@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strconv"
 	"sync"
 
 	xnet "github.com/xtls/xray-core/common/net"
@@ -16,6 +17,7 @@ import (
 	_ "github.com/xtls/xray-core/main/distro/all"
 
 	"netmerge-android/internal/vpntransport"
+	"netmerge-android/internal/profile"
 )
 
 // Xray's system dialer is global. Install a permanent guarded adapter once;
@@ -40,7 +42,10 @@ func (g *systemGate) Dial(ctx context.Context, _ xnet.Address, dest xnet.Destina
 	if d == nil || dest.Network != xnet.Network_TCP {
 		return nil, errors.New("VPN system dial rejected")
 	}
-	return d.DialContext(ctx, "tcp", dest.NetAddr())
+	if dest.Address == nil || !dest.Address.Family().IsIP() {
+		return nil, errors.New("VPN physical destination must be an IP")
+	}
+	return d.DialContext(ctx, "tcp", net.JoinHostPort(dest.Address.IP().String(), strconv.Itoa(int(dest.Port))))
 }
 func (g *systemGate) DestIpAddress() xnet.IP { return nil }
 
@@ -64,6 +69,9 @@ func Open(link string, endpoint netip.AddrPort, pinned vpntransport.PinnedTCP) (
 	if active != nil {
 		return nil, errors.New("VPN core already running")
 	}
+	p, err := profile.ParseRealityTCP(link)
+	if err != nil { return nil, err }
+	if endpoint.Port() != p.Port { return nil, errors.New("VPN endpoint port differs from profile") }
 	d, err := vpntransport.NewEndpointDialer(pinned, endpoint)
 	if err != nil { return nil, err }
 	raw, err := vpntransport.BuildXrayConfig(link, endpoint.Addr())
@@ -100,8 +108,7 @@ func (c *Client) DialTCP(ctx context.Context, target netip.AddrPort) (net.Conn, 
 	return core.Dial(ctx, c.instance, xnet.TCPDestination(xnet.ParseAddress(target.Addr().Unmap().String()), xnet.Port(target.Port())))
 }
 
-// UDP is deliberately unsupported in this first experiment. It must not
-// be forwarded directly; DNS and datagrams need a separately tested path.
+// Close disables new flows and shuts down the core.
 func (c *Client) Close() error {
 	lifecycle.Lock()
 	defer lifecycle.Unlock()
