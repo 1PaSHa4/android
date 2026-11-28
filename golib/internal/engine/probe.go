@@ -20,7 +20,9 @@ const (
 	probeEveryDown = 4 * time.Second
 )
 
-func probe(sl *Slot, f Family, targets [2][]string) bool {
+func probe(sl *Slot, f Family) bool { return probeWithTargets(sl, f, probeTargets) }
+
+func probeWithTargets(sl *Slot, f Family, targets [2][]string) bool {
 	ip := sl.ip(f)
 	if ip == nil {
 		return false
@@ -76,7 +78,7 @@ func (s *Scheduler) runProbes(stop <-chan struct{}, targets [2][]string) {
 			go func() {
 				defer j.sl.probing[j.f].Store(false)
 				if len(targets[j.f]) == 0 { return }
-				up := probe(j.sl, j.f, targets)
+				up := probeWithTargets(j.sl, j.f, targets)
 				select { case <-stop: return; default: }
 				s.SetState(j.sl, j.f, up)
 			}()
